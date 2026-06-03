@@ -1,0 +1,562 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>骑行实时仪表盘 PRO+</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+<script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+
+<style>
+body {
+    margin: 0;
+    font-family: Arial;
+    background: radial-gradient(circle at top, #0f172a, #020617);
+    color: white;
+}
+
+.header {
+    text-align: center;
+    padding: 15px;
+    font-size: 22px;
+    font-weight: bold;
+}
+
+.speed-box {
+    width: 200px;
+    height: 200px;
+    border-radius: 50%;
+    border: 8px solid #38bdf8;
+    margin: 20px auto;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 40px;
+    font-weight: bold;
+    background: rgba(255,255,255,0.05);
+}
+
+.card {
+    width: 85%;
+    margin: 10px auto;
+    padding: 12px;
+    border-radius: 14px;
+    background: rgba(255,255,255,0.06);
+    backdrop-filter: blur(10px);
+    display: flex;
+    justify-content: space-between;
+}
+
+.label { opacity: 0.7; }
+.value { font-weight: bold; }
+
+.gps-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    display: inline-block;
+    margin-right: 6px;
+}
+
+.green { background: #22c55e; }
+.red { background: #ef4444; }
+
+.hr-low { color: #22c55e; }
+.hr-mid { color: #facc15; }
+.hr-high { color: #ef4444; }
+
+.fall-screen {
+    position: fixed;
+    top:0;
+    left:0;
+    width:100%;
+    height:100%;
+    background: rgba(255,0,0,0.92);
+    color:white;
+    display:none;
+    align-items:center;
+    justify-content:center;
+    text-align:center;
+    font-size:42px;
+    font-weight:bold;
+    z-index:9999;
+    animation: alarmFlash 1s infinite;
+}
+/* 新增：中暑警告弹窗样式 */
+.heat-screen {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(245, 158, 11, 0.92); /* 默认橙色警告 */
+    color: white;
+    display: none; /* 默认隐藏 */
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    text-align: center;
+    font-size: 42px;
+    font-weight: bold;
+    z-index: 9998; /* 层级略低于摔倒警报 */
+    animation: alarmFlash 1.5s infinite;
+}
+
+.heat-details {
+    font-size: 20px;
+    margin-top: 20px;
+    font-weight: normal;
+    background: rgba(0,0,0,0.3);
+    padding: 15px;
+    border-radius: 12px;
+    line-height: 1.6;
+}
+
+@keyframes alarmFlash {
+    0% { opacity:1; }
+    50% { opacity:0.45; }
+    100% { opacity:1; }
+}
+
+button{
+    padding:12px 24px;
+    margin:10px;
+    border:none;
+    border-radius:12px;
+    background:#38bdf8;
+    color:white;
+    font-size:16px;
+    font-weight:bold;
+    cursor:pointer;
+}
+
+button:hover{
+    opacity:0.85;
+}
+
+/* 自定义弹窗样式（替代原生的 alert） */
+.modal-overlay {
+    position: fixed;
+    top: 0; left: 0; width: 100%; height: 100%;
+    background: rgba(0,0,0,0.7);
+    z-index: 10000;
+    display: none;
+}
+.modal-box {
+    position: fixed;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    width: 90%; max-width: 500px; max-height: 80vh;
+    background: #1e293b;
+    border-radius: 16px;
+    padding: 20px;
+    box-shadow: 0 10px 25px rgba(0,0,0,0.5);
+    z-index: 10001;
+    display: none;
+    overflow-y: auto;
+}
+.modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid #334155;
+    padding-bottom: 10px;
+    margin-bottom: 15px;
+}
+.modal-title { font-size: 18px; font-weight: bold; color: #38bdf8; }
+.modal-close { background: none; border: none; color: #ef4444; font-size: 24px; cursor: pointer; padding:0; margin:0; }
+.history-item {
+    background: rgba(255,255,255,0.05);
+    padding: 14px;
+    border-radius: 10px;
+    margin-bottom: 12px;
+    font-size: 14px;
+    line-height: 1.6;
+    border-left: 4px solid #38bdf8;
+}
+.history-item-title { font-weight: bold; margin-bottom: 5px; color: #facc15; }
+</style>
+</head>
+
+<body>
+
+<div class="fall-screen" id="fallScreen">
+    <div>
+        🚨 摔倒警报 🚨
+        <br><br>
+        请立即检查骑行状态
+    </div>
+</div>
+
+<div class="heat-screen" id="heatScreen">
+    <div id="heatTitle">🔥 中暑风险警告 🔥</div>
+    <div class="heat-details" id="heatDetails">
+        环境闷热且心率偏高<br>请注意补水并适当休息！
+    </div>
+</div>
+
+<div class="modal-overlay" id="modalOverlay" onclick="closeModal()"></div>
+<div class="modal-box" id="customModal">
+    <div class="modal-header">
+        <span class="modal-title">📊 骑行历史记录与报告 (最近5次)</span>
+        <button class="modal-close" onclick="closeModal()">×</button>
+    </div>
+    <div id="modalContent"></div>
+</div>
+
+<div class="header">🚴 骑行实时仪表盘 PRO+</div>
+
+<div class="speed-box" id="speed">0</div>
+<div id="map" style="height:300px;width:90%;margin:10px auto;border-radius:12px;"></div>
+
+<div class="card">
+    <span class="label">❤️ 心率</span>
+    <span class="value" id="heart">--</span>
+</div>
+
+<div class="card">
+    <span class="label">🌡 温度</span>
+    <span class="value" id="temp">--</span>
+</div>
+
+<div class="card">
+    <span class="label">💧 湿度</span>
+    <span class="value" id="hum">--</span>
+</div>
+
+<div class="card">
+    <span class="label">📍 GPS</span>
+    <span class="value" id="gps">
+        <span class="gps-dot red"></span>未定位
+    </span>
+</div>
+
+<div class="card">
+    <span class="label">🏃 骑行状态</span>
+    <span class="value" id="sportState">待检测</span>
+</div>
+
+<script>
+const client = mqtt.connect(
+    "wss://g53ab1af.ala.dedicated.aliyun.emqxcloud.cn:8084/mqtt",
+    {
+        username: "bike",
+        password: "123456",
+        clean: true
+    }
+);
+
+// ====== 骑行数据状态变量 ======
+let lastLat = null;
+let lastLon = null;
+let track = [];
+let maxSpeed = 0;
+let heartSum = 0;
+let heartCount = 0;
+let fallCount = 0;
+let fallFlag = false;
+
+let rideTime = 0;
+let rideDistance = 0;
+let rideCalories = 0;
+
+let startMarker = null;
+let endMarker = null;
+
+// 初始化地图
+let map = L.map('map').setView([38.0428, 114.5149], 15);
+L.tileLayer('https://webrd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}', {
+    subdomains: "1234",
+    maxZoom: 18
+}).addTo(map);
+
+let polyline = L.polyline([], { color: 'red' }).addTo(map);
+
+client.on("connect", () => {
+    client.subscribe("bike/data");
+});
+
+client.on("message", (t, msg) => {
+    let data;
+    try {
+        data = JSON.parse(msg.toString());
+    } catch (e) {
+        return;
+    }
+
+    // 核心修复：强制转换为 Number，防止 toFixed 报错崩溃
+    rideTime = Number(data.ride_time) || 0;
+    rideDistance = Number(data.ride_distance) || 0;
+    rideCalories = Number(data.ride_calories) || 0;
+
+    // ========= 速度 =========
+    const currentSpeed = Number(data.speed) || 0;
+    document.getElementById("speed").innerText = currentSpeed.toFixed(1);
+
+    if(currentSpeed > maxSpeed) {
+        maxSpeed = currentSpeed;
+    }
+
+    // ========= 心率与运动状态 =========
+    const heart = document.getElementById("heart");
+    const hr = Number(data.heart) || 0;
+    heartSum += hr;
+    heartCount++;
+    
+    const sportState = document.getElementById("sportState");
+    if (hr < 90 && currentSpeed < 10) {
+        sportState.innerText = "轻松骑行";
+        sportState.style.color = "#22c55e";
+    } else if (hr < 130 && currentSpeed < 25) {
+        sportState.innerText = "中等强度";
+        sportState.style.color = "#facc15";
+    } else {
+        sportState.innerText = "高强度运动";
+        sportState.style.color = "#ef4444";
+    }
+    heart.innerText = hr.toFixed(0);
+
+    if (hr < 100) heart.className = "value hr-low";
+    else if (hr < 130) heart.className = "value hr-mid";
+    else heart.className = "value hr-high";
+
+    // ========= 温湿度 =========
+    document.getElementById("temp").innerText = (Number(data.temp) || 0).toFixed(1) + "°C";
+    document.getElementById("hum").innerText = (Number(data.hum) || 0).toFixed(1) + "%";
+
+    // ========= GPS 与 轨迹绘制 =========
+    const gps = document.getElementById("gps");
+    const lat = Number(data.lat);
+    const lon = Number(data.lon);
+    const gpsValid = 
+        data.gps === 1 &&
+        !isNaN(lat) &&
+        !isNaN(lon) &&
+        Math.abs(lat) > 0.000001 &&
+        Math.abs(lon) > 0.000001;
+
+    if (gpsValid) {
+        lastLat = lat;
+        lastLon = lon;
+        // 起点标记
+        if (!startMarker) {
+            startMarker = L.marker([lat, lon]).addTo(map).bindPopup("🚩 起点");
+        }
+        
+        // 记录轨迹点
+        track.push({
+            lat: lat,
+            lon: lon,
+            time: Date.now()
+        });
+        
+        // 实时更新地图线段
+        polyline.setLatLngs(track.map(p => [p.lat, p.lon]));
+        
+        gps.innerHTML = `<span class="gps-dot green"></span>${lat.toFixed(6)}, ${lon.toFixed(6)}`;
+    } else if (lastLat !== null && lastLon !== null) {
+        gps.innerHTML = `<span class="gps-dot green"></span>${lastLat.toFixed(6)}, ${lastLon.toFixed(6)} (缓存)`;
+    } else {
+        gps.innerHTML = `<span class="gps-dot red"></span>未定位`;
+    }
+
+    // ========= 摔倒检测 =========
+    const fallScreen = document.getElementById("fallScreen");
+    if (data.fall === 1) {
+        fallScreen.style.display = "flex";
+        if(!fallFlag) {
+            fallCount++;
+            fallFlag = true;
+        }
+    } else {
+        fallScreen.style.display = "none";
+        fallFlag = false;
+    }
+
+
+    // ========= 新增：中暑风险检测 =========
+    const heatScreen = document.getElementById("heatScreen");
+    const heatTitle = document.getElementById("heatTitle");
+    const heatDetails = document.getElementById("heatDetails");
+    const heatRisk = Number(data.heat_risk) || 0;
+
+    // 如果没有摔倒，才显示中暑警告（摔倒优先级最高）
+    if (data.fall !== 1) {
+        if (heatRisk === 2) {
+            // 危险级别：红色高频闪烁
+            heatScreen.style.display = "flex";
+            heatScreen.style.background = "rgba(239, 68, 68, 0.95)"; // 红色
+            heatTitle.innerText = "🥵 极度危险：中暑前兆 🥵";
+            heatDetails.innerHTML = `当前心率: <b>${hr.toFixed(0)} BPM</b> | 温度: <b>${data.temp}°C</b> | 湿度: <b>${data.hum}%</b><br><br>🚨 请立即停止骑行，转移至阴凉处降温补水！`;
+        } else if (heatRisk === 1) {
+            // 警告级别：橙色慢闪
+            heatScreen.style.display = "flex";
+            heatScreen.style.background = "rgba(245, 158, 11, 0.92)"; // 橙色
+            heatTitle.innerText = "🔥 高温高湿警告 🔥";
+            heatDetails.innerHTML = `当前心率: <b>${hr.toFixed(0)} BPM</b> | 温度: <b>${data.temp}°C</b> | 湿度: <b>${data.hum}%</b><br><br>⚠️ 环境闷热导致心率加快，请及时喝水！`;
+        } else {
+            // 安全状态
+            heatScreen.style.display = "none";
+        }
+    } else {
+        // 如果已经摔倒了，隐藏中暑提示，给摔倒红色警报让路
+        heatScreen.style.display = "none";
+    }
+});
+
+// 🏁 结束骑行并保存
+function endRide()
+{
+    let history = JSON.parse(localStorage.getItem("ride_history") || "[]");
+    const avgHeart = heartCount > 0 ? (heartSum / heartCount) : 0;
+
+    // 1. 添加终点标记
+    if (track.length > 0) {
+        const lastPoint = track[track.length - 1];
+        if (!endMarker) {
+            endMarker = L.marker([lastPoint.lat, lastPoint.lon]).addTo(map).bindPopup("🏁 终点");
+        } else {
+            endMarker.setLatLng([lastPoint.lat, lastPoint.lon]);
+        }
+    }
+
+    // 2. 将报告与轨迹打包存入同一条记录，实现完美对应
+    history.push({
+        time: new Date().toLocaleString(),
+        report: {
+            rideTime: rideTime,
+            rideDistance: rideDistance,
+            rideCalories: rideCalories,
+            maxSpeed: maxSpeed,
+            avgHeart: avgHeart,
+            fallCount: fallCount
+        },
+        track: [...track]
+    });
+
+    // 3. 只保留最近5次
+    if(history.length > 5) {
+        history = history.slice(-5);
+    }
+
+    localStorage.setItem("ride_history", JSON.stringify(history));
+
+    // 4. 下发结束指令
+    client.publish(
+        "bike/cmd",
+        JSON.stringify({ cmd: "end_ride" })
+    );
+
+    alert("本次骑行已结束，数据成功保存！");
+
+    // ====== 核心修复：重置单次骑行所有状态变量，防止数据无限叠加爆满 localStorage ======
+    track = [];
+    maxSpeed = 0;
+    heartSum = 0;
+    heartCount = 0;
+    fallCount = 0;
+    rideTime = 0;
+    rideDistance = 0;
+    rideCalories = 0;
+    fallFlag = false;
+    
+    // 清理实时地图线和起点，等待下一次骑行
+    polyline.setLatLngs([]);
+    if(startMarker) { map.removeLayer(startMarker); startMarker = null; }
+}
+
+// 📊 显示一览弹窗（合并原有的查看报告与历史轨迹，完美对应）
+function openHistoryModal() {
+    let history = JSON.parse(localStorage.getItem("ride_history") || "[]");
+    const modal = document.getElementById("customModal");
+    const overlay = document.getElementById("modalOverlay");
+    const content = document.getElementById("modalContent");
+
+    if (history.length === 0) {
+        alert("暂无骑行历史记录");
+        return;
+    }
+
+    let html = "";
+    // 从最新的记录开始倒序显示
+    history.slice().reverse().forEach((item, index) => {
+        const realIndex = history.length - index;
+        html += `<div class="history-item">`;
+        html += `<div class="history-item-title">🚴 第 ${realIndex} 次骑行数据</div>`;
+        html += `<div><b>🕒 记录时间:</b> ${item.time}</div>`;
+        
+        // 渲染报告数据
+        if (item.report) {
+            html += `<div><b>⏱ 骑行时长:</b> ${item.report.rideTime} 秒</div>`;
+            html += `<div><b>📏 骑行距离:</b> ${Number(item.report.rideDistance).toFixed(2)} km</div>`;
+            html += `<div><b>🔥 消耗热量:</b> ${Number(item.report.rideCalories).toFixed(1)} kcal</div>`;
+            html += `<div><b>⚡ 最高速度:</b> ${Number(item.report.maxSpeed).toFixed(1)} km/h</div>`;
+            html += `<div><b>💓 平均心率:</b> ${Number(item.report.avgHeart).toFixed(1)} bpm</div>`;
+            html += `<div><b>⚠️ 跌倒次数:</b> ${item.report.fallCount} 次</div>`;
+        } else {
+            html += `<div style="color:red;">（无报告统计数据）</div>`;
+        }
+
+        // 渲染对应的轨迹信息
+        const tPoints = item.track || [];
+        html += `<div style="margin-top: 5px; padding-top: 5px; border-top: 1px dashed rgba(255,255,255,0.1);">`;
+        html += `<b>🗺 轨迹点数:</b> ${tPoints.length} 个点`;
+        if (tPoints.length > 0) {
+            html += `<br><b>🏁 起点:</b> ${tPoints[0].lat.toFixed(5)}, ${tPoints[0].lon.toFixed(5)}`;
+            html += `<br><b>🏁 终点:</b> ${tPoints[tPoints.length-1].lat.toFixed(5)}, ${tPoints[tPoints.length-1].lon.toFixed(5)}`;
+        }
+        html += `</div></div>`;
+    });
+
+    content.innerHTML = html;
+    modal.style.display = "block";
+    overlay.style.display = "block";
+}
+
+function closeModal() {
+    document.getElementById("customModal").style.display = "none";
+    document.getElementById("modalOverlay").style.display = "none";
+}
+
+async function startNavigation()
+{
+    const keyword = document.getElementById("destInput").value.trim();
+    if(keyword === "") { alert("请输入目的地"); return; }
+
+    try {
+        const url = `https://restapi.amap.com/v3/place/text?key=9e91af171f35d323c30fe3d4b1b7fd32&keywords=${encodeURIComponent(keyword)}&offset=1&page=1`;
+        const res = await fetch(url);
+        const data = await res.json();
+
+        if(data.pois && data.pois.length > 0) {
+            const poi = data.pois[0];
+            const location = poi.location.split(",");
+            const lon = parseFloat(location[0]);
+            const lat = parseFloat(location[1]);
+            const msg = `${poi.name},${lat},${lon}`;
+
+            client.publish("bike/cmd", msg);
+            alert("导航目标：" + poi.name);
+        } else {
+            alert("未找到地点");
+        }
+    } catch(err) {
+        console.error(err);
+        alert("高德搜索失败");
+    }
+}
+</script>
+
+<div style="text-align:center;margin-top:20px;">
+    <input id="destInput" placeholder="输入目的地，例如北京大学" 
+           style="width:260px; padding:10px; border-radius:10px; border:none;">
+    <button onclick="startNavigation()">🧭 开始导航</button>
+</div>
+
+<div style="text-align:center;margin:20px;">
+    <button onclick="openHistoryModal()">📊 查看骑行报告与历史轨迹</button>
+    <button onclick="endRide()">🏁 结束骑行</button>
+</div>
+
+</body>
+</html>
