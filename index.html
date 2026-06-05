@@ -255,11 +255,60 @@ let heartSum = 0;
 let heartCount = 0;
 let fallCount = 0;
 let fallFlag = false;
+let isEndingByMe = false; // 标记是否是当前设备点击的结束
 
+
+// 👉 新增：将清理逻辑独立为一个函数，方便多端调用
+function clearLocalRideData() {
+    track = [];
+    maxSpeed = 0;
+    heartSum = 0;
+    heartCount = 0;
+    fallCount = 0;
+    rideTime = 0;
+    rideDistance = 0;
+    rideCalories = 0;
+    fallFlag = false;
+    
+    // 1. 清理实时地图线和标记
+    polyline.setLatLngs([]);
+    if(startMarker) { map.removeLayer(startMarker); startMarker = null; }
+    if(endMarker) { map.removeLayer(endMarker); endMarker = null; }
+
+    // 2. 🎯 核心修复：清理页面上的显示面板，让肉眼能看到已经同步结束！
+    document.getElementById("speed").innerText = "0";
+    document.getElementById("heart").innerText = "--";
+    document.getElementById("heart").className = "value"; // 恢复心率默认颜色
+    document.getElementById("temp").innerText = "--";
+    document.getElementById("hum").innerText = "--";
+    document.getElementById("gps").innerHTML = `<span class="gps-dot red"></span>未定位`;
+    //document.getElementById("sportState").innerText = "待检测";
+    //document.getElementById("sportState").style.color = "white"; // 恢复默认颜色
+    document.getElementById("fallScreen").style.display = "none"; // 隐藏可能存在的警报
+    document.getElementById("heatScreen").style.display = "none";
+}
+
+// 👉 新增：将清理逻辑独立为一个函数，方便多端调用
+function clearLocalRideData() {
+    track = [];
+    maxSpeed = 0;
+    heartSum = 0;
+    heartCount = 0;
+    fallCount = 0;
+    rideTime = 0;
+    rideDistance = 0;
+    rideCalories = 0;
+    fallFlag = false;
+    
+    // 清理实时地图线和标记
+    polyline.setLatLngs([]);
+    if(startMarker) { map.removeLayer(startMarker); startMarker = null; }
+    if(endMarker) { map.removeLayer(endMarker); endMarker = null; }
+}
 let rideTime = 0;
 let rideDistance = 0;
 let rideCalories = 0;
-
+let rideHistory = [];
 let startMarker = null;
 let endMarker = null;
 
@@ -273,16 +322,39 @@ L.tileLayer('https://webrd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scal
 let polyline = L.polyline([], { color: 'red' }).addTo(map);
 
 client.on("connect", () => {
+
     client.subscribe("bike/data");
+
+    client.subscribe("bike/history");
+    client.subscribe("bike/cmd");
 });
 
 client.on("message", (t, msg) => {
-    let data;
-    try {
-        data = JSON.parse(msg.toString());
-    } catch (e) {
+   const payload = msg.toString();
+
+    if(t === "bike/history") {
+        try { rideHistory = JSON.parse(payload); } catch(e) { console.log(e); }
         return;
     }
+
+    // 👉 新增：如果收到结束指令（无论是手机发出的还是电脑发出的）
+    if (t === "bike/cmd" && payload.includes("end_ride")) {
+
+    alert("🏁 骑行已结束");
+
+    document.getElementById("sportState").innerText = "已结束骑行";
+    document.getElementById("sportState").style.color = "red";
+
+    clearLocalRideData();
+
+    isEndingByMe = false;
+
+    return;
+}
+
+    let data;
+    try { data = JSON.parse(payload); } catch (e) { return; }
+
 
     // 核心修复：强制转换为 Number，防止 toFixed 报错崩溃
     rideTime = Number(data.ride_time) || 0;
@@ -405,9 +477,17 @@ client.on("message", (t, msg) => {
 });
 
 // 🏁 结束骑行并保存
-function endRide()
-{
-    let history = JSON.parse(localStorage.getItem("ride_history") || "[]");
+// 🏁 结束骑行并保存
+// 🏁 结束骑行并保存
+function endRide() {
+    if (track.length === 0) {
+        alert("⚠️ 当前没有正在进行的骑行，或已在其他设备上结束！");
+        return;
+    }
+
+    isEndingByMe = true; // 🎯 核心：标记是“我”主动点击的结束
+
+    let history = rideHistory;
     const avgHeart = heartCount > 0 ? (heartSum / heartCount) : 0;
 
     // 1. 添加终点标记
@@ -420,7 +500,7 @@ function endRide()
         }
     }
 
-    // 2. 将报告与轨迹打包存入同一条记录，实现完美对应
+    // 2. 将报告与轨迹打包
     history.push({
         time: new Date().toLocaleString(),
         report: {
@@ -434,12 +514,15 @@ function endRide()
         track: [...track]
     });
 
-    // 3. 只保留最近5次
-    if(history.length > 5) {
-        history = history.slice(-5);
-    }
+    if(history.length > 5) { history = history.slice(-5); }
+    rideHistory = history;
 
-    localStorage.setItem("ride_history", JSON.stringify(history));
+    // 3. 发布历史记录
+    client.publish(
+        "bike/history",
+        JSON.stringify(history),
+        { qos:1, retain:true }
+    );
 
     // 4. 下发结束指令
     client.publish(
@@ -447,27 +530,12 @@ function endRide()
         JSON.stringify({ cmd: "end_ride" })
     );
 
-    alert("本次骑行已结束，数据成功保存！");
-
-    // ====== 核心修复：重置单次骑行所有状态变量，防止数据无限叠加爆满 localStorage ======
-    track = [];
-    maxSpeed = 0;
-    heartSum = 0;
-    heartCount = 0;
-    fallCount = 0;
-    rideTime = 0;
-    rideDistance = 0;
-    rideCalories = 0;
-    fallFlag = false;
-    
-    // 清理实时地图线和起点，等待下一次骑行
-    polyline.setLatLngs([]);
-    if(startMarker) { map.removeLayer(startMarker); startMarker = null; }
+    alert("本次骑行已结束，数据成功保存！"); // 🎯 主动结束的弹窗
 }
 
 // 📊 显示一览弹窗（合并原有的查看报告与历史轨迹，完美对应）
 function openHistoryModal() {
-    let history = JSON.parse(localStorage.getItem("ride_history") || "[]");
+    let history = rideHistory;
     const modal = document.getElementById("customModal");
     const overlay = document.getElementById("modalOverlay");
     const content = document.getElementById("modalContent");
