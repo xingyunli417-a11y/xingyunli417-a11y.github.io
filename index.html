@@ -82,23 +82,23 @@ body {
     z-index:9999;
     animation: alarmFlash 1s infinite;
 }
-/* 新增：中暑警告弹窗样式 */
+
 .heat-screen {
     position: fixed;
     top: 0;
     left: 0;
     width: 100%;
     height: 100%;
-    background: rgba(245, 158, 11, 0.92); /* 默认橙色警告 */
+    background: rgba(245, 158, 11, 0.92);
     color: white;
-    display: none; /* 默认隐藏 */
+    display: none;
     align-items: center;
     justify-content: center;
     flex-direction: column;
     text-align: center;
     font-size: 42px;
     font-weight: bold;
-    z-index: 9998; /* 层级略低于摔倒警报 */
+    z-index: 9998;
     animation: alarmFlash 1.5s infinite;
 }
 
@@ -134,7 +134,7 @@ button:hover{
     opacity:0.85;
 }
 
-/* 自定义弹窗样式（替代原生的 alert） */
+/* 自定义弹窗样式 */
 .modal-overlay {
     position: fixed;
     top: 0; left: 0; width: 100%; height: 100%;
@@ -175,6 +175,22 @@ button:hover{
     border-left: 4px solid #38bdf8;
 }
 .history-item-title { font-weight: bold; margin-bottom: 5px; color: #facc15; }
+
+/* 新增：历史记录操作按钮区域样式 */
+.history-actions {
+    margin-top: 10px;
+    display: flex;
+    gap: 10px;
+}
+.btn-small {
+    padding: 6px 12px !important;
+    margin: 0 !important;
+    font-size: 13px !important;
+    border-radius: 8px !important;
+    width: auto !important;
+}
+.btn-route { background: #38bdf8; }
+.btn-play { background: #22c55e; }
 </style>
 </head>
 
@@ -255,10 +271,32 @@ let heartSum = 0;
 let heartCount = 0;
 let fallCount = 0;
 let fallFlag = false;
-let isEndingByMe = false; // 标记是否是当前设备点击的结束
+let isEndingByMe = false; 
 
+let rideTime = 0;
+let rideDistance = 0;
+let rideCalories = 0;
+let rideHistory = [];
+let startMarker = null;
+let endMarker = null;
 
-// 👉 新增：将清理逻辑独立为一个函数，方便多端调用
+// ====== 新增：历史路线与回放控制变量 ======
+let historyPolyline = null;     // 历史路线划线图层
+let historyStartMarker = null;  // 历史起点标记
+let historyEndMarker = null;    // 历史终点标记
+let playbackMarker = null;      // 回放动画小点标记
+let playbackTimer = null;       // 回放定时器
+
+// 初始化地图
+let map = L.map('map').setView([38.0428, 114.5149], 15);
+L.tileLayer('https://webrd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}', {
+    subdomains: "1234",
+    maxZoom: 18
+}).addTo(map);
+
+let polyline = L.polyline([], { color: 'red' }).addTo(map);
+
+// 👉 清理当前实时骑行数据
 function clearLocalRideData() {
     track = [];
     maxSpeed = 0;
@@ -275,56 +313,46 @@ function clearLocalRideData() {
     if(startMarker) { map.removeLayer(startMarker); startMarker = null; }
     if(endMarker) { map.removeLayer(endMarker); endMarker = null; }
 
-    // 2. 🎯 核心修复：清理页面上的显示面板，让肉眼能看到已经同步结束！
+    // 2. 清理页面上的显示面板
     document.getElementById("speed").innerText = "0";
     document.getElementById("heart").innerText = "--";
-    document.getElementById("heart").className = "value"; // 恢复心率默认颜色
+    document.getElementById("heart").className = "value"; 
     document.getElementById("temp").innerText = "--";
     document.getElementById("hum").innerText = "--";
     document.getElementById("gps").innerHTML = `<span class="gps-dot red"></span>未定位`;
-    //document.getElementById("sportState").innerText = "待检测";
-    //document.getElementById("sportState").style.color = "white"; // 恢复默认颜色
-    document.getElementById("fallScreen").style.display = "none"; // 隐藏可能存在的警报
+    document.getElementById("fallScreen").style.display = "none"; 
     document.getElementById("heatScreen").style.display = "none";
+
+    // 3. 同时把遗留的历史回放图层也清除干净
+    clearHistoryDisplay();
 }
 
-// 👉 新增：将清理逻辑独立为一个函数，方便多端调用
-function clearLocalRideData() {
-    track = [];
-    maxSpeed = 0;
-    heartSum = 0;
-    heartCount = 0;
-    fallCount = 0;
-    rideTime = 0;
-    rideDistance = 0;
-    rideCalories = 0;
-    fallFlag = false;
-    
-    // 清理实时地图线和标记
-    polyline.setLatLngs([]);
-    if(startMarker) { map.removeLayer(startMarker); startMarker = null; }
-    if(endMarker) { map.removeLayer(endMarker); endMarker = null; }
+// 👉 新增：专门清除地图上历史轨迹和回放动画的函数
+function clearHistoryDisplay() {
+    if (playbackTimer) {
+        clearInterval(playbackTimer);
+        playbackTimer = null;
+    }
+    if (historyPolyline) {
+        map.removeLayer(historyPolyline);
+        historyPolyline = null;
+    }
+    if (historyStartMarker) {
+        map.removeLayer(historyStartMarker);
+        historyStartMarker = null;
+    }
+    if (historyEndMarker) {
+        map.removeLayer(historyEndMarker);
+        historyEndMarker = null;
+    }
+    if (playbackMarker) {
+        map.removeLayer(playbackMarker);
+        playbackMarker = null;
+    }
 }
-let rideTime = 0;
-let rideDistance = 0;
-let rideCalories = 0;
-let rideHistory = [];
-let startMarker = null;
-let endMarker = null;
-
-// 初始化地图
-let map = L.map('map').setView([38.0428, 114.5149], 15);
-L.tileLayer('https://webrd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}', {
-    subdomains: "1234",
-    maxZoom: 18
-}).addTo(map);
-
-let polyline = L.polyline([], { color: 'red' }).addTo(map);
 
 client.on("connect", () => {
-
     client.subscribe("bike/data");
-
     client.subscribe("bike/history");
     client.subscribe("bike/cmd");
 });
@@ -337,26 +365,18 @@ client.on("message", (t, msg) => {
         return;
     }
 
-    // 👉 新增：如果收到结束指令（无论是手机发出的还是电脑发出的）
     if (t === "bike/cmd" && payload.includes("end_ride")) {
-
-    alert("🏁 骑行已结束");
-
-    document.getElementById("sportState").innerText = "已结束骑行";
-    document.getElementById("sportState").style.color = "red";
-
-    clearLocalRideData();
-
-    isEndingByMe = false;
-
-    return;
-}
+        alert("🏁 骑行已结束");
+        document.getElementById("sportState").innerText = "已结束骑行";
+        document.getElementById("sportState").style.color = "red";
+        clearLocalRideData();
+        isEndingByMe = false;
+        return;
+    }
 
     let data;
     try { data = JSON.parse(payload); } catch (e) { return; }
 
-
-    // 核心修复：强制转换为 Number，防止 toFixed 报错崩溃
     rideTime = Number(data.ride_time) || 0;
     rideDistance = Number(data.ride_distance) || 0;
     rideCalories = Number(data.ride_calories) || 0;
@@ -410,21 +430,17 @@ client.on("message", (t, msg) => {
     if (gpsValid) {
         lastLat = lat;
         lastLon = lon;
-        // 起点标记
         if (!startMarker) {
             startMarker = L.marker([lat, lon]).addTo(map).bindPopup("🚩 起点");
         }
         
-        // 记录轨迹点
         track.push({
             lat: lat,
             lon: lon,
             time: Date.now()
         });
         
-        // 实时更新地图线段
         polyline.setLatLngs(track.map(p => [p.lat, p.lon]));
-        
         gps.innerHTML = `<span class="gps-dot green"></span>${lat.toFixed(6)}, ${lon.toFixed(6)}`;
     } else if (lastLat !== null && lastLon !== null) {
         gps.innerHTML = `<span class="gps-dot green"></span>${lastLat.toFixed(6)}, ${lastLon.toFixed(6)} (缓存)`;
@@ -445,39 +461,31 @@ client.on("message", (t, msg) => {
         fallFlag = false;
     }
 
-
-    // ========= 新增：中暑风险检测 =========
+    // ========= 中暑风险检测 =========
     const heatScreen = document.getElementById("heatScreen");
     const heatTitle = document.getElementById("heatTitle");
     const heatDetails = document.getElementById("heatDetails");
     const heatRisk = Number(data.heat_risk) || 0;
 
-    // 如果没有摔倒，才显示中暑警告（摔倒优先级最高）
     if (data.fall !== 1) {
         if (heatRisk === 2) {
-            // 危险级别：红色高频闪烁
             heatScreen.style.display = "flex";
-            heatScreen.style.background = "rgba(239, 68, 68, 0.95)"; // 红色
+            heatScreen.style.background = "rgba(239, 68, 68, 0.95)"; 
             heatTitle.innerText = "🥵 极度危险：中暑前兆 🥵";
             heatDetails.innerHTML = `当前心率: <b>${hr.toFixed(0)} BPM</b> | 温度: <b>${data.temp}°C</b> | 湿度: <b>${data.hum}%</b><br><br>🚨 请立即停止骑行，转移至阴凉处降温补水！`;
         } else if (heatRisk === 1) {
-            // 警告级别：橙色慢闪
             heatScreen.style.display = "flex";
-            heatScreen.style.background = "rgba(245, 158, 11, 0.92)"; // 橙色
+            heatScreen.style.background = "rgba(245, 158, 11, 0.92)"; 
             heatTitle.innerText = "🔥 高温高湿警告 🔥";
             heatDetails.innerHTML = `当前心率: <b>${hr.toFixed(0)} BPM</b> | 温度: <b>${data.temp}°C</b> | 湿度: <b>${data.hum}%</b><br><br>⚠️ 环境闷热导致心率加快，请及时喝水！`;
         } else {
-            // 安全状态
             heatScreen.style.display = "none";
         }
     } else {
-        // 如果已经摔倒了，隐藏中暑提示，给摔倒红色警报让路
         heatScreen.style.display = "none";
     }
 });
 
-// 🏁 结束骑行并保存
-// 🏁 结束骑行并保存
 // 🏁 结束骑行并保存
 function endRide() {
     if (track.length === 0) {
@@ -485,12 +493,11 @@ function endRide() {
         return;
     }
 
-    isEndingByMe = true; // 🎯 核心：标记是“我”主动点击的结束
+    isEndingByMe = true; 
 
     let history = rideHistory;
     const avgHeart = heartCount > 0 ? (heartSum / heartCount) : 0;
 
-    // 1. 添加终点标记
     if (track.length > 0) {
         const lastPoint = track[track.length - 1];
         if (!endMarker) {
@@ -500,7 +507,6 @@ function endRide() {
         }
     }
 
-    // 2. 将报告与轨迹打包
     history.push({
         time: new Date().toLocaleString(),
         report: {
@@ -517,23 +523,21 @@ function endRide() {
     if(history.length > 5) { history = history.slice(-5); }
     rideHistory = history;
 
-    // 3. 发布历史记录
     client.publish(
         "bike/history",
         JSON.stringify(history),
         { qos:1, retain:true }
     );
 
-    // 4. 下发结束指令
     client.publish(
         "bike/cmd",
         JSON.stringify({ cmd: "end_ride" })
     );
 
-    alert("本次骑行已结束，数据成功保存！"); // 🎯 主动结束的弹窗
+    alert("本次骑行已结束，数据成功保存！"); 
 }
 
-// 📊 显示一览弹窗（合并原有的查看报告与历史轨迹，完美对应）
+// 📊 显示一览弹窗 (已嵌入路线查看与回放按钮)
 function openHistoryModal() {
     let history = rideHistory;
     const modal = document.getElementById("customModal");
@@ -546,14 +550,14 @@ function openHistoryModal() {
     }
 
     let html = "";
-    // 从最新的记录开始倒序显示
-    history.slice().reverse().forEach((item, index) => {
-        const realIndex = history.length - index;
+    // 倒序渲染，保证最新的记录在最上面
+    for (let i = history.length - 1; i >= 0; i--) {
+        const item = history[i];
+        const realIndex = i + 1;
         html += `<div class="history-item">`;
         html += `<div class="history-item-title">🚴 第 ${realIndex} 次骑行数据</div>`;
         html += `<div><b>🕒 记录时间:</b> ${item.time}</div>`;
         
-        // 渲染报告数据
         if (item.report) {
             html += `<div><b>⏱ 骑行时长:</b> ${item.report.rideTime} 秒</div>`;
             html += `<div><b>📏 骑行距离:</b> ${Number(item.report.rideDistance).toFixed(2)} km</div>`;
@@ -565,16 +569,23 @@ function openHistoryModal() {
             html += `<div style="color:red;">（无报告统计数据）</div>`;
         }
 
-        // 渲染对应的轨迹信息
         const tPoints = item.track || [];
         html += `<div style="margin-top: 5px; padding-top: 5px; border-top: 1px dashed rgba(255,255,255,0.1);">`;
         html += `<b>🗺 轨迹点数:</b> ${tPoints.length} 个点`;
         if (tPoints.length > 0) {
             html += `<br><b>🏁 起点:</b> ${tPoints[0].lat.toFixed(5)}, ${tPoints[0].lon.toFixed(5)}`;
             html += `<br><b>🏁 终点:</b> ${tPoints[tPoints.length-1].lat.toFixed(5)}, ${tPoints[tPoints.length-1].lon.toFixed(5)}`;
+            
+            // 👉 新增：操作按钮区域，直接传递其在源数组中的正确索引 i
+            html += `<div class="history-actions">`;
+            html += `<button class="btn-small btn-route" onclick="showHistoryRoute(${i})">🗺️ 查看路线</button>`;
+            html += `<button class="btn-small btn-play" onclick="startPlayback(${i})">▶️ 路线回放</button>`;
+            html += `</div>`;
+        } else {
+            html += `<br><span style="color: #94a3b8; font-size:12px;">（未记录到有效的GPS定位点）</span>`;
         }
         html += `</div></div>`;
-    });
+    }
 
     content.innerHTML = html;
     modal.style.display = "block";
@@ -584,6 +595,82 @@ function openHistoryModal() {
 function closeModal() {
     document.getElementById("customModal").style.display = "none";
     document.getElementById("modalOverlay").style.display = "none";
+}
+
+// 👉 新增功能一：在地图上静态绘制选中的历史路线
+function showHistoryRoute(index) {
+    closeModal();          // 关闭弹窗
+    clearHistoryDisplay(); // 先清除可能存在的上一次查看记录
+
+    const item = rideHistory[index];
+    const trackPoints = item.track || [];
+
+    if (trackPoints.length === 0) {
+        alert("⚠️ 该场次没有记录到有效的GPS轨迹点！");
+        return;
+    }
+
+    // 将经纬度转换成 Leaflet 所需的数组格式形式 [[lat, lon], [lat, lon]...]
+    const latlngs = trackPoints.map(p => [p.lat, p.lon]);
+
+    // 绘制历史路线（使用蓝色粗虚线，以便与当前的实时红色路线明显区分）
+    historyPolyline = L.polyline(latlngs, { 
+        color: '#38bdf8', 
+        weight: 5, 
+        dashArray: '5, 8',
+        opacity: 0.9 
+    }).addTo(map);
+
+    // 标记历史轨迹的起点和终点
+    historyStartMarker = L.marker(latlngs[0]).addTo(map).bindPopup(`🟢 第 ${index+1} 次骑行起点<br>${item.time}`);
+    historyEndMarker = L.marker(latlngs[latlngs.length - 1]).addTo(map).bindPopup(`🔴 第 ${index+1} 次骑行终点`);
+
+    // 🎯 自动缩放和调整地图视角，完美容纳整条轨迹路径
+    map.fitBounds(historyPolyline.getBounds());
+}
+
+// 👉 新增功能二：动态路线回放功能
+function startPlayback(index) {
+    // 1. 先调用上面的函数，将整条静止的路线图层渲染并缩放好
+    showHistoryRoute(index);
+
+    const item = rideHistory[index];
+    const trackPoints = item.track || [];
+    if (trackPoints.length === 0) return;
+
+    // 2. 创建一个闪烁的橙黄色小圆点作为“回放小车”
+    playbackMarker = L.circleMarker([trackPoints[0].lat, trackPoints[0].lon], {
+        radius: 9,
+        fillColor: '#facc15',
+        color: '#ffffff',
+        weight: 2,
+        fillOpacity: 1
+    }).addTo(map).bindPopup("🚴 正在回放骑行轨迹...").openPopup();
+
+    let currentStep = 0;
+
+    // 3. 开启定时器，逐步移动位置
+    playbackTimer = setInterval(() => {
+        currentStep++;
+        
+        // 判定是否走完全程
+        if (currentStep >= trackPoints.length) {
+            clearInterval(playbackTimer);
+            playbackTimer = null;
+            playbackMarker.closePopup();
+            alert(`🏁 第 ${index+1} 次骑行路线回放已完成！`);
+            return;
+        }
+
+        const point = trackPoints[currentStep];
+        const nextLatLng = [point.lat, point.lon];
+
+        // 移到下一个轨迹点位置
+        playbackMarker.setLatLng(nextLatLng);
+
+        // 让地图中心视角平滑跟随着这个点移动，提供极佳的视野体验
+        map.panTo(nextLatLng);
+    }, 250); // 每 250 毫秒前进一个点（您可以根据具体的轨迹密度和需求自行调大或调小此数值）
 }
 
 async function startNavigation()
@@ -623,6 +710,7 @@ async function startNavigation()
 
 <div style="text-align:center;margin:20px;">
     <button onclick="openHistoryModal()">📊 查看骑行报告与历史轨迹</button>
+    <button onclick="clearHistoryDisplay()" style="background:#64748b;">扫 清除历史显示</button>
     <button onclick="endRide()">🏁 结束骑行</button>
 </div>
 
